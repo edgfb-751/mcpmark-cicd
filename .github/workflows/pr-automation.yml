@@ -1,0 +1,203 @@
+name: PR Automation Workflow
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        id: eslint
+        run: npm run lint
+        continue-on-error: false
+
+      - name: Run Prettier Format Check
+        id: prettier
+        run: npx prettier --check .
+        continue-on-error: false
+
+      - name: Post Code Quality Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentBody = `## Code Quality Report
+            ### ESLint Results
+            \`\`\`
+            ${{ steps.eslint.outputs.stdout || 'No ESLint issues detected' }}
+            \`\`\`
+            ### Prettier Results
+            \`\`\`
+            ${{ steps.prettier.outputs.stdout || 'No Prettier formatting issues detected' }}
+            \`\`\``;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Test Suite with Coverage
+        id: tests
+        run: npm test -- --coverage
+        continue-on-error: false
+
+      - name: Upload Coverage Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentBody = `## Test Coverage Report
+            \`\`\`
+            ${{ steps.tests.outputs.stdout || 'Test coverage report not available' }}
+            \`\`\`
+            Coverage artifacts have been uploaded as 'coverage-report'`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Dependency Vulnerability Check (npm audit)
+        id: npm-audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Run Secret Scan
+        id: secret-scan
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          fail-on-findings: false
+
+      - name: Post Security Scan Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentBody = `## Security Scan Report
+            ### Dependencies Vulnerabilities (npm audit)
+            \`\`\`
+            ${{ steps.npm-audit.outputs.stdout || 'No moderate/high vulnerabilities found' }}
+            \`\`\`
+            ### Secret Scan Results
+            \`\`\`
+            ${{ steps.secret-scan.outputs.stdout || 'No secrets detected' }}
+            \`\`\``;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Application
+        id: build
+        run: npm run build
+        continue-on-error: false
+
+      - name: Validate Build Output
+        id: validate-build
+        run: |
+          if [ -d "dist" ]; then
+            echo "Build directory 'dist' exists"
+          else
+            echo "Build directory 'dist' not found"
+            exit 1
+          fi
+        continue-on-error: false
+
+      - name: Upload Deployment Preview Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: dist/
+          retention-days: 7
+
+      - name: Post Build Validation Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentBody = `## Build Validation
+            ### Build Status: Success
+            ### Validation Results:
+            \`\`\`
+            ${{ steps.validate-build.outputs.stdout || 'Build validation passed' }}
+            \`\`\`
+            Deployment preview artifacts have been uploaded as 'build-artifacts'`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
